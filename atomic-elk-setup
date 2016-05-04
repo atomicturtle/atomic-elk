@@ -1,0 +1,75 @@
+#!/bin/sh
+# Atomicorp, Inc
+# Licensed under the AGPL (https://www.gnu.org/licenses/agpl-3.0.en.html)
+
+if ! egrep -q "ossec:.*logstash" /etc/group ; then
+	usermod -a -G ossec logstash
+fi
+
+# We may need a geolite.dat update
+# curl -O "http://geolite.maxmind.com/download/geoip/database/GeoLiteCity.dat.gz"
+# gzip -d GeoLiteCity.dat.gz && sudo mv GeoLiteCity.dat /etc/logstash/
+
+
+# Configure Elasticsearch
+# edit /etc/elasticsearch/elasticsearch.yml
+sed -i "s/# cluster.name:.*/cluster.name: atomic-elk/" /etc/elasticsearch/elasticsearch.yml
+sed -i "s/# node.name:.*/node.name: $HOSTNAME/" /etc/elasticsearch/elasticsearch.yml
+sed -i "s/# bootstrap.mlockall:/bootstrap.mlockall:/" /etc/elasticsearch/elasticsearch.yml
+
+if ! egrep -q  "^elasticsearch - nofile  65535" /etc/security/limits.conf ; then
+	echo "elasticsearch - nofile  65535" >> /etc/security/limits.conf
+fi
+
+if ! egrep -q  "^elasticsearch - memlock unlimited" /etc/security/limits.conf ; then
+	echo "elasticsearch - memlock unlimited" >> /etc/security/limits.conf
+fi
+
+# Increase heapsize, to 1/2 system memory
+#  TODO: we need a memory check
+MEMORY=`grep MemTotal /proc/meminfo | awk '{print $2}'`
+MEM1=$(( $MEMORY / 1024000))
+MEM2=$(( $MEM1 / 2 ))
+
+if [ $MEM2 -lt 1 ] ; then
+        $MEM2 = 1
+fi
+
+echo "Detected memory: ${MEM2}g"
+
+# /etc/sysconfig/elasticsearch
+#  - ES_HEAP_SIZE=8g
+sed -i "s/#ES_HEAP_SIZE=2g/ES_HEAP_SIZE=${MEM2}g/" /etc/sysconfig/elasticsearch
+
+#  - MAX_LOCKED_MEMORY=unlimited
+sed -i "s/#MAX_LOCKED_MEMORY=unlimited/MAX_LOCKED_MEMORY=unlimited/" /etc/sysconfig/elasticsearch
+
+#  - MAX_OPEN_FILES=65535
+sed -i "s/#MAX_LOCKED_MEMORY=unlimited/MAX_LOCKED_MEMORY=unlimited/" /etc/sysconfig/elasticsearch
+
+# Edit systemd.service /usr/lib/systemd/system/elasticsearch.service
+# LimitMEMLOCK=infinity
+sed -i "s/#LimitMEMLOCK=infinity/LimitMEMLOCK=infinity/" /usr/lib/systemd/system/elasticsearch.service
+
+
+# Add to startup
+/bin/systemctl daemon-reload
+/bin/systemctl enable elasticsearch.service
+service elasticsearch start
+
+# TODO: Elastic API, this allows for configuring elasticsearch based
+# on a set of json configuration directives. 
+#    curl -XPUT "http://localhost:9200/_template/ossec/" -d "@<example>.json"
+# Success will return: 
+# {"acknowledged":true}
+
+# Start logstash
+service logstash start
+
+# Kibana config
+# /opt/kibana/config/kibana.yml
+# elasticsearch.url: "http://127.0.0.1:9200"
+
+# TODO: configure web server
+# TODO: set up passwd auth accounts
+
